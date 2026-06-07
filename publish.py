@@ -155,12 +155,61 @@ def publish(topic: str, model: str = 'gemini-2.5-pro', dry_run: bool = False):
         except subprocess.CalledProcessError as e:
             print(f"Git operations failed: {e}")
 
+def get_existing_topics() -> list:
+    output_dir = "content/posts"
+    if not os.path.exists(output_dir):
+        return []
+    
+    topics = []
+    for filename in os.listdir(output_dir):
+        if filename.endswith(".md"):
+            filepath = os.path.join(output_dir, filename)
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    # extract title from frontmatter: title: "..."
+                    match = re.search(r'^title:\s*"(.*?)"', content, re.MULTILINE)
+                    if match:
+                        topics.append(match.group(1))
+                    else:
+                        # Fallback to filename without extension
+                        topics.append(filename[:-3].replace("-", " "))
+            except Exception as e:
+                print(f"Warning: Failed to read {filename}: {e}")
+    return topics
+
+def generate_daily_topic(model: str = 'gemini-2.5-pro') -> str:
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        print("Error: GEMINI_API_KEY is not set in the environment.")
+        exit(1)
+
+    client = genai.Client(api_key=api_key)
+    existing = get_existing_topics()
+    
+    prompt = "Generate a single, highly relevant, and trending cybersecurity topic for a blog article. "
+    if existing:
+        prompt += f"The following topics have already been covered, so DO NOT repeat or closely overlap with them: {', '.join(existing)}. "
+    prompt += "Output ONLY the topic name as plain text (e.g., 'Software Supply Chain Security in 2026' or 'Active Directory Golden Ticket Attacks'). Do not include quotes, markdown, or any introductory/concluding text."
+    
+    print("Generating a new cybersecurity topic...")
+    response = client.models.generate_content(
+        model=model,
+        contents=prompt,
+    )
+    topic = response.text.strip().strip('"').strip("'")
+    print(f"Generated topic: {topic}")
+    return topic
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Automated Publishing System for BreachModal.com")
-    parser.add_argument("topic", help="The cybersecurity topic to generate and publish")
+    parser.add_argument("topic", nargs="?", help="The cybersecurity topic to generate and publish (optional. If omitted, a topic will be auto-generated)")
     parser.add_argument("--dry-run", action="store_true", help="Generate files but do not run Git commit/push")
     parser.add_argument("--model", default="gemini-2.5-pro", choices=["gemini-2.5-pro", "gemini-2.5-flash"], help="Gemini model to use")
     args = parser.parse_args()
     
-    publish(args.topic, model=args.model, dry_run=args.dry_run)
-
+    topic = args.topic
+    if not topic:
+        topic = generate_daily_topic(model=args.model)
+        
+    publish(topic, model=args.model, dry_run=args.dry_run)
