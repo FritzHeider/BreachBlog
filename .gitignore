@@ -113,3 +113,8 @@ cython_debug/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Local cron state files
+.cron_start_time
+cron_run.log
+
