@@ -13,7 +13,10 @@ def fetch_trending_topic() -> str:
         print("Error: GEMINI_API_KEY is not set.")
         exit(1)
         
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=600000)
+    )
     
     prompt = """
     Search the web for current trending cybersecurity topics, news, or incidents from the last 24-48 hours.
@@ -46,5 +49,7 @@ if __name__ == "__main__":
         print(f"Selected trending topic: {topic}")
         publish(topic, model=args.model, dry_run=args.dry_run)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"Failed to fetch or publish trending topic: {e}")
         exit(1)

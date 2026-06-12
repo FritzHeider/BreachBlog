@@ -12,15 +12,47 @@ from prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE, ContentPack
 
 load_dotenv()
 
+def fetch_grounding_context(topic: str, api_key: str) -> str:
+    print(f"Searching the web for context on: {topic}...")
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=600000)
+    )
+    prompt = f"""
+    Search the web for the latest, authoritative threat intelligence, articles, and advisories regarding this cybersecurity topic: "{topic}".
+    Provide a detailed factual summary of the vulnerability, threat actors, exploits, and mitigations based on the search results. Include specific details like affected versions and CVE numbers if available.
+    """
+    response = client.models.generate_content(
+        model='gemini-2.5-flash',
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            tools=[types.Tool(google_search=types.GoogleSearch())],
+            temperature=0.3,
+        )
+    )
+    return response.text
+
 def generate_content(topic: str, model: str = 'gemini-2.5-pro') -> dict:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         print("Error: GEMINI_API_KEY is not set in the environment.")
         exit(1)
 
-    client = genai.Client(api_key=api_key)
+    # 1. Fetch grounding context using search tool
+    grounding_context = fetch_grounding_context(topic, api_key)
     
-    prompt = USER_PROMPT_TEMPLATE.format(topic=topic)
+    # 2. Build prompt with context
+    prompt = f"""
+{USER_PROMPT_TEMPLATE.format(topic=topic)}
+
+CONCRETE FACTS AND RESEARCH FOUND FROM WEB SEARCH (use these to write the article and details):
+{grounding_context}
+"""
+
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=600000)
+    )
     
     print(f"Generating content for topic: {topic} using {model}...")
     response = client.models.generate_content(
@@ -184,7 +216,10 @@ def generate_daily_topic(model: str = 'gemini-2.5-pro') -> str:
         print("Error: GEMINI_API_KEY is not set in the environment.")
         exit(1)
 
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=600000)
+    )
     existing = get_existing_topics()
     
     prompt = "Generate a single, highly relevant, and trending cybersecurity topic for a blog article. "

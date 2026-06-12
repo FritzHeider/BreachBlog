@@ -118,3 +118,11 @@ Thumbs.db
 .cron_start_time
 cron_run.log
 
+# LLM Agent configurations and databases
+.claude/
+.claude-flow/
+.swarm/
+.mcp.json
+ruvector.db
+CLAUDE.md
+
