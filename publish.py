@@ -12,6 +12,42 @@ from prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE, ContentPack
 
 load_dotenv()
 
+def generate_hero_image(hero_concept: str, slug: str, api_key: str) -> str | None:
+    """Generate a hero image using Imagen 3 and save to static/images/. Returns relative path or None."""
+    output_dir = "static/images"
+    os.makedirs(output_dir, exist_ok=True)
+    image_path = os.path.join(output_dir, f"{slug}.png")
+
+    prompt = (
+        f"Cinematic, professional cybersecurity editorial illustration. "
+        f"{hero_concept} "
+        "Dark background with blue and red accents. Photorealistic digital art. "
+        "16:9 widescreen format. No text or logos."
+    )
+
+    try:
+        client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(timeout=120000)
+        )
+        response = client.models.generate_images(
+            model='imagen-4.0-generate-001',
+            prompt=prompt,
+            config=types.GenerateImagesConfig(
+                numberOfImages=1,
+                aspectRatio='16:9',
+                outputMimeType='image/png',
+            )
+        )
+        image_bytes = response.generated_images[0].image.image_bytes
+        with open(image_path, "wb") as f:
+            f.write(image_bytes)
+        print(f"Hero image saved to {image_path}")
+        return f"/images/{slug}.png"
+    except Exception as e:
+        print(f"Warning: Image generation failed: {e}")
+        return None
+
 def fetch_grounding_context(topic: str, api_key: str) -> str:
     print(f"Searching the web for context on: {topic}...")
     client = genai.Client(
@@ -74,24 +110,25 @@ CONCRETE FACTS AND RESEARCH FOUND FROM WEB SEARCH (use these to write the articl
         print(response.text)
         raise e
 
-def create_markdown(data: dict, slug: str) -> str:
+def create_markdown(data: dict, slug: str, image_path: str | None = None) -> str:
     seo = data.get("seo", {})
     article = data.get("article", {})
-    
+
     title = seo.get("title", article.get("title", "Untitled"))
     description = seo.get("meta_description", "")
     keywords = seo.get("primary_keywords", []) + seo.get("secondary_keywords", [])
-    
+
     date_str = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-    
-    # Frontmatter - using json.dumps to safely escape any double quotes or special characters
+
+    image_line = f"\nimage: {json.dumps(image_path)}" if image_path else ""
+
     frontmatter = f"""---
 title: {json.dumps(title)}
 description: {json.dumps(description)}
 date: {date_str}
 slug: {json.dumps(slug)}
 tags: {json.dumps(keywords)}
-author: "BreachModal Intelligence"
+author: "BreachModal Intelligence"{image_line}
 ---
 """
     return frontmatter + "\n" + article.get("content", "")
@@ -131,22 +168,29 @@ def slugify(text: str) -> str:
     return text.strip('-')
 
 def publish(topic: str, model: str = 'gemini-2.5-pro', dry_run: bool = False):
+    api_key = os.getenv("GEMINI_API_KEY")
     data = generate_content(topic, model=model)
-    
+
     slug = slugify(topic)
     if len(slug) > 50:
         slug = slug[:50].strip('-')
-        
+
+    # Generate hero image before writing markdown so path goes into frontmatter
+    hero_concept = data.get("visual_brief", {}).get("hero_image_concept", "")
+    image_path = None
+    if hero_concept and api_key:
+        image_path = generate_hero_image(hero_concept, slug, api_key)
+
     output_dir = "content/posts"
     os.makedirs(output_dir, exist_ok=True)
-    
-    md_content = create_markdown(data, slug)
+
+    md_content = create_markdown(data, slug, image_path=image_path)
     filepath = os.path.join(output_dir, f"{slug}.md")
-    
+
     with open(filepath, "w") as f:
         f.write(md_content)
     print(f"Article saved to {filepath}")
-    
+
     social_dir = "content/social"
     os.makedirs(social_dir, exist_ok=True)
     social_content = create_social_file(data)
@@ -154,38 +198,61 @@ def publish(topic: str, model: str = 'gemini-2.5-pro', dry_run: bool = False):
     with open(social_filepath, "w") as f:
         f.write(social_content)
     print(f"Social copy saved to {social_filepath}")
-    
+
     if dry_run:
         print("Dry-run mode active. Skipping Git operations.")
         return
-    
+
     # Git automation for Cloudflare Pages
     is_git = False
     try:
-        # Check if we're in a git repo
         subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], check=True, capture_output=True)
         is_git = True
     except subprocess.CalledProcessError:
         print("Not a git repository, skipping auto-publish.")
-        
+
     if is_git:
         try:
             print("Committing and pushing to trigger Cloudflare Pages deployment...")
-            subprocess.run(["git", "add", filepath, social_filepath], check=True)
-            
-            # Check if there are staged changes before committing
+            files_to_add = [filepath, social_filepath]
+            if image_path:
+                local_image_path = os.path.join("static", image_path.lstrip("/"))
+                if os.path.exists(local_image_path):
+                    files_to_add.append(local_image_path)
+            subprocess.run(["git", "add"] + files_to_add, check=True)
+
             status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, check=True)
             if status.stdout.strip():
                 subprocess.run(["git", "commit", "-m", f"Auto-publish: {topic}"], check=True)
-                result = subprocess.run(["git", "push"], capture_output=True, text=True)
-                if result.returncode == 0:
+                push_result = _git_push()
+                if push_result:
                     print("Successfully pushed to remote repository.")
                 else:
-                    print(f"Git push failed (no remote configured?): {result.stderr.strip()}")
+                    print("Git push failed. Content committed locally; push manually or check GH_TOKEN in .env.")
             else:
                 print("No changes to commit. Skipping push.")
         except subprocess.CalledProcessError as e:
             print(f"Git operations failed: {e}")
+
+
+def _git_push() -> bool:
+    """Push to origin, using GH_TOKEN from env if available (needed for non-interactive cron)."""
+    gh_token = os.getenv("GH_TOKEN")
+    if gh_token:
+        # Get the remote URL and inject the token
+        url_result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True, text=True
+        )
+        remote_url = url_result.stdout.strip()
+        # Convert https://github.com/... to https://token@github.com/...
+        if remote_url.startswith("https://github.com/"):
+            auth_url = remote_url.replace("https://github.com/", f"https://{gh_token}@github.com/")
+            result = subprocess.run(["git", "push", auth_url], capture_output=True, text=True)
+            return result.returncode == 0
+
+    result = subprocess.run(["git", "push"], capture_output=True, text=True)
+    return result.returncode == 0
 
 def get_existing_topics() -> list:
     output_dir = "content/posts"
