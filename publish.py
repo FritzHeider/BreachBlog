@@ -199,6 +199,8 @@ def publish(topic: str, model: str = 'gemini-2.5-pro', dry_run: bool = False):
         f.write(social_content)
     print(f"Social copy saved to {social_filepath}")
 
+    publish_to_nextjs(data, slug, image_relative_path=image_path, dry_run=dry_run)
+
     if dry_run:
         print("Dry-run mode active. Skipping Git operations.")
         return
@@ -233,6 +235,158 @@ def publish(topic: str, model: str = 'gemini-2.5-pro', dry_run: bool = False):
                 print("No changes to commit. Skipping push.")
         except subprocess.CalledProcessError as e:
             print(f"Git operations failed: {e}")
+
+
+def translate_markdown_to_nextjs_body(markdown_content: str) -> str:
+    lines = markdown_content.split("\n")
+    translated_lines = []
+    for line in lines:
+        stripped = line.strip()
+        # Match a markdown heading, e.g., "# Heading", "## Heading", "### Heading"
+        match = re.match(r'^(#+)\s+(.+)$', stripped)
+        if match:
+            heading_text = match.group(2).strip()
+            translated_lines.append(f"**{heading_text}**")
+        else:
+            translated_lines.append(line)
+    return "\n".join(translated_lines)
+
+def determine_category(topic: str, content: str) -> str:
+    topic_lower = topic.lower()
+    content_lower = content.lower()
+    if "soc 2" in topic_lower or "compliance" in topic_lower or "audit" in topic_lower or "gdpr" in topic_lower or "hipaa" in topic_lower or "iso 27001" in topic_lower:
+        return "Compliance"
+    elif "ai" in topic_lower or "artificial intelligence" in topic_lower or "llm" in topic_lower or "machine learning" in topic_lower:
+        return "AI Security"
+    elif "incident" in topic_lower or "response" in topic_lower or "containment" in topic_lower or "breach response" in topic_lower or "playbook" in topic_lower:
+        return "Incident Response"
+    elif "vulnerability" in topic_lower or "zero-day" in topic_lower or "exploit" in topic_lower or "cve" in topic_lower or "threat" in topic_lower or "attack" in topic_lower or "ransomware" in topic_lower:
+        return "Threat Intelligence"
+    # Fallback checking content too
+    if "compliance" in content_lower or "audit" in content_lower:
+        return "Compliance"
+    if "ai" in content_lower or "machine learning" in content_lower:
+        return "AI Security"
+    if "incident response" in content_lower or "playbook" in content_lower:
+        return "Incident Response"
+    return "Threat Intelligence"
+
+def _git_push_nextjs(nextjs_dir: str) -> bool:
+    gh_token = os.getenv("GH_TOKEN")
+    if gh_token:
+        url_result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=nextjs_dir, capture_output=True, text=True
+        )
+        remote_url = url_result.stdout.strip()
+        if remote_url.startswith("https://github.com/"):
+            auth_url = remote_url.replace("https://github.com/", f"https://{gh_token}@github.com/")
+            result = subprocess.run(["git", "push", auth_url], cwd=nextjs_dir, capture_output=True, text=True)
+            return result.returncode == 0
+
+    result = subprocess.run(["git", "push"], cwd=nextjs_dir, capture_output=True, text=True)
+    return result.returncode == 0
+
+def publish_to_nextjs(data: dict, slug: str, image_relative_path: str | None = None, dry_run: bool = False):
+    """Publish the blog post to the Next.js site in BreachLawAgency repository."""
+    import shutil
+    nextjs_dir = "/Users/drop/BreachLawAgency"
+    
+    if not os.path.exists(nextjs_dir):
+        print(f"Error: Next.js repository directory {nextjs_dir} does not exist.")
+        return
+
+    # 1. Copy image to BreachLawAgency public folder if path is provided
+    if image_relative_path:
+        src_image = os.path.join("static", image_relative_path.lstrip("/"))
+        dest_image = os.path.join(nextjs_dir, "public", image_relative_path.lstrip("/"))
+        
+        if not dry_run:
+            if os.path.exists(src_image):
+                os.makedirs(os.path.dirname(dest_image), exist_ok=True)
+                shutil.copy2(src_image, dest_image)
+                print(f"Copied image {src_image} to {dest_image}")
+            else:
+                print(f"Warning: Source image {src_image} does not exist.")
+        else:
+            print(f"[Dry-run] Would copy image {src_image} to {dest_image}")
+
+    # 2. Extract content details
+    seo = data.get("seo", {})
+    article = data.get("article", {})
+    title = seo.get("title", article.get("title", "Untitled"))
+    description = seo.get("meta_description", "")
+    
+    raw_content = article.get("content", "")
+    body_content = translate_markdown_to_nextjs_body(raw_content)
+    
+    category = determine_category(title, raw_content)
+    
+    words = len(raw_content.split())
+    read_time_min = max(1, round(words / 200))
+    read_time = f"{read_time_min} min read"
+    
+    date_str = datetime.utcnow().strftime("%Y-%m-%d")
+    data_ts_path = os.path.join(nextjs_dir, "src/app/blog/data.ts")
+    
+    if not os.path.exists(data_ts_path):
+        print(f"Error: Next.js blog data file {data_ts_path} does not exist.")
+        return
+        
+    with open(data_ts_path, "r", encoding="utf-8") as f:
+        data_ts_content = f.read()
+
+    if f'slug: "{slug}"' in data_ts_content or f"slug: '{slug}'" in data_ts_content:
+        print(f"Post with slug {slug} already exists in Next.js blog database. Skipping database update.")
+        return
+
+    image_line = f'\n    image: {json.dumps(image_relative_path)},' if image_relative_path else ""
+    new_post_str = f"""  {{
+    slug: {json.dumps(slug)},
+    title: {json.dumps(title)},
+    description: {json.dumps(description)},
+    date: {json.dumps(date_str)},
+    category: {json.dumps(category)},
+    readTime: {json.dumps(read_time)},
+    body: {json.dumps(body_content)},{image_line}
+  }},
+"""
+
+    target = "export const blogPosts: BlogPost[] = ["
+    if target not in data_ts_content:
+        print(f"Error: Could not find target array declaration '{target}' in {data_ts_path}.")
+        return
+
+    if not dry_run:
+        index = data_ts_content.find(target) + len(target)
+        updated_content = data_ts_content[:index] + "\n" + new_post_str + data_ts_content[index:]
+        with open(data_ts_path, "w", encoding="utf-8") as f:
+            f.write(updated_content)
+        print(f"Updated {data_ts_path} with new post {slug}")
+        # Git operations
+        try:
+            print("Staging, committing, and pushing changes in BreachLawAgency...")
+            if image_relative_path:
+                dest_image = os.path.join(nextjs_dir, "public", image_relative_path.lstrip("/"))
+                if os.path.exists(dest_image):
+                    subprocess.run(["git", "add", "-f", dest_image], cwd=nextjs_dir, check=True)
+            subprocess.run(["git", "add", data_ts_path], cwd=nextjs_dir, check=True)
+            
+            status = subprocess.run(["git", "status", "--porcelain"], cwd=nextjs_dir, capture_output=True, text=True, check=True)
+            if status.stdout.strip():
+                subprocess.run(["git", "commit", "-m", f"Auto-publish: {title}"], cwd=nextjs_dir, check=True)
+                push_result = _git_push_nextjs(nextjs_dir)
+                if push_result:
+                    print("Successfully pushed to BreachLawAgency remote repository.")
+                else:
+                    print("Git push failed for BreachLawAgency. Content committed locally.")
+            else:
+                print("No changes to commit in BreachLawAgency.")
+        except subprocess.CalledProcessError as e:
+            print(f"Git operations failed for BreachLawAgency: {e}")
+
+    else:
+        print(f"[Dry-run] Would insert the following post into {data_ts_path}:\n{new_post_str}")
 
 
 def _git_push() -> bool:
