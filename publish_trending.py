@@ -15,7 +15,7 @@ def fetch_trending_topic() -> str:
         
     client = genai.Client(
         api_key=api_key,
-        http_options=types.HttpOptions(timeout=600000)
+        http_options={'timeout': 300000.0}
     )
     
     prompt = """

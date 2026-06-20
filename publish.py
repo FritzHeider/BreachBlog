@@ -28,7 +28,7 @@ def generate_hero_image(hero_concept: str, slug: str, api_key: str) -> str | Non
     try:
         client = genai.Client(
             api_key=api_key,
-            http_options=types.HttpOptions(timeout=120000)
+            http_options={'timeout': 300000.0}
         )
         response = client.models.generate_images(
             model='imagen-4.0-generate-001',
@@ -52,7 +52,7 @@ def fetch_grounding_context(topic: str, api_key: str) -> str:
     print(f"Searching the web for context on: {topic}...")
     client = genai.Client(
         api_key=api_key,
-        http_options=types.HttpOptions(timeout=600000)
+        http_options={'timeout': 300000.0}
     )
     prompt = f"""
     Search the web for the latest, authoritative threat intelligence, articles, and advisories regarding this cybersecurity topic: "{topic}".
@@ -87,7 +87,7 @@ CONCRETE FACTS AND RESEARCH FOUND FROM WEB SEARCH (use these to write the articl
 
     client = genai.Client(
         api_key=api_key,
-        http_options=types.HttpOptions(timeout=600000)
+        http_options={'timeout': 300000.0}
     )
     
     print(f"Generating content for topic: {topic} using {model}...")
@@ -285,7 +285,7 @@ def generate_daily_topic(model: str = 'gemini-2.5-pro') -> str:
 
     client = genai.Client(
         api_key=api_key,
-        http_options=types.HttpOptions(timeout=600000)
+        http_options={'timeout': 300000.0}
     )
     existing = get_existing_topics()
     
