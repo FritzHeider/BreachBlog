@@ -30,3 +30,7 @@ fi
 echo "$(date): Executing automated trending topic publication..." >> "$PROJECT_DIR/cron_run.log"
 .venv/bin/python publish_trending.py >> "$PROJECT_DIR/cron_run.log" 2>&1
 echo "$(date): Execution finished with exit code $?." >> "$PROJECT_DIR/cron_run.log"
+
+# Update start time for the next 24 hour interval
+date +%s > "$START_FILE"
+

@@ -91,24 +91,41 @@ CONCRETE FACTS AND RESEARCH FOUND FROM WEB SEARCH (use these to write the articl
     )
     
     print(f"Generating content for topic: {topic} using {model}...")
-    response = client.models.generate_content(
-        model=model,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            response_mime_type="application/json",
-            response_schema=ContentPack,
-            temperature=0.7,
-        ),
-    )
-    
     try:
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                response_mime_type="application/json",
+                response_schema=ContentPack,
+                temperature=0.7,
+            ),
+        )
         validated_data = ContentPack.model_validate_json(response.text)
         return validated_data.model_dump()
     except Exception as e:
-        print("Error validating response against ContentPack schema:")
-        print(response.text)
-        raise e
+        print(f"Error generating content with {model}: {e}")
+        if model != 'gemini-2.5-flash':
+            print("Retrying generation with fallback model: gemini-2.5-flash...")
+            try:
+                response = client.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=SYSTEM_PROMPT,
+                        response_mime_type="application/json",
+                        response_schema=ContentPack,
+                        temperature=0.7,
+                    ),
+                )
+                validated_data = ContentPack.model_validate_json(response.text)
+                return validated_data.model_dump()
+            except Exception as fallback_err:
+                print(f"Fallback generation with gemini-2.5-flash also failed: {fallback_err}")
+                raise fallback_err
+        else:
+            raise e
 
 def create_markdown(data: dict, slug: str, image_path: str | None = None) -> str:
     seo = data.get("seo", {})
