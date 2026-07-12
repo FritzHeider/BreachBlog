@@ -126,3 +126,4 @@ cron_run.log
 ruvector.db
 CLAUDE.md
 
+.gstack/

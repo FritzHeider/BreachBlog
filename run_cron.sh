@@ -1,8 +1,18 @@
 #!/bin/bash
 
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 # Target directory
 PROJECT_DIR="/Users/drop/breachblog"
 cd "$PROJECT_DIR" || exit 1
+
+LOCK_FILE="$PROJECT_DIR/.cron_running.lock"
+if [ -f "$LOCK_FILE" ]; then
+    echo "$(date): Another instance is already running (lock file exists). Exiting." >> "$PROJECT_DIR/cron_run.log"
+    exit 0
+fi
+touch "$LOCK_FILE"
+trap "rm -f '$LOCK_FILE'" EXIT
 
 # Check start delay
 START_FILE="$PROJECT_DIR/.cron_start_time"
@@ -22,12 +32,17 @@ ELAPSED=$((CURRENT_TIME - START_TIME))
 
 if [ "$ELAPSED" -lt "$DELAY" ]; then
     REMAINING=$((DELAY - ELAPSED))
-    echo "$(date): Delay active. $((REMAINING / 3600)) hours remaining before first run." >> "$PROJECT_DIR/cron_run.log"
+    HOURS_REMAINING=$((REMAINING / 3600))
+    MINS_REMAINING=$(( (REMAINING % 3600) / 60 ))
+    echo "$(date): Delay active. ${HOURS_REMAINING}h ${MINS_REMAINING}m remaining before next run." >> "$PROJECT_DIR/cron_run.log"
     exit 0
 fi
 
 # Run the python script
 echo "$(date): Executing automated trending topic publication..." >> "$PROJECT_DIR/cron_run.log"
+if ! command -v git-lfs &> /dev/null; then
+    echo "$(date): Warning: git-lfs is not installed. Large file pushes may fail." >> "$PROJECT_DIR/cron_run.log"
+fi
 .venv/bin/python publish_trending.py >> "$PROJECT_DIR/cron_run.log" 2>&1
 echo "$(date): Execution finished with exit code $?." >> "$PROJECT_DIR/cron_run.log"
 

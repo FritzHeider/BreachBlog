@@ -3,12 +3,20 @@ import json
 import os
 import re
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
 from prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE, ContentPack
+from utils import (
+    translate_markdown_to_nextjs_body,
+    determine_category,
+    git_push,
+    get_nextjs_dir,
+    get_read_time,
+    WORDS_PER_MINUTE,
+)
 
 load_dotenv()
 
@@ -48,6 +56,50 @@ def generate_hero_image(hero_concept: str, slug: str, api_key: str) -> str | Non
         print(f"Warning: Image generation failed: {e}")
         return None
 
+def generate_educational_images(educational_images: list, slug: str, api_key: str) -> dict:
+    """Generate educational/diagram images for [Visual Graphic N] placeholders.
+    Returns a dict mapping placeholder string -> (relative_path, alt_text, caption)."""
+    output_dir = "static/images"
+    os.makedirs(output_dir, exist_ok=True)
+    client = genai.Client(api_key=api_key, http_options={'timeout': 300000.0})
+    results = {}
+    for img in educational_images:
+        placeholder = img.get("placeholder", "")
+        concept = img.get("concept", "")
+        caption = img.get("caption", "")
+        alt_text = img.get("alt_text", "")
+        if not placeholder or not concept:
+            continue
+        # Derive a filename from the placeholder, e.g. "[Visual Graphic 1]" -> slug-visual-1.png
+        num = re.sub(r'[^0-9]', '', placeholder) or "x"
+        filename = f"{slug}-visual-{num}.png"
+        image_path = os.path.join(output_dir, filename)
+        prompt = (
+            f"Professional cybersecurity educational infographic or diagram. "
+            f"{concept} "
+            "Dark background with blue and red data-visualization accents. "
+            "Clean, readable labels. No watermarks or logos. 16:9 format."
+        )
+        try:
+            response = client.models.generate_images(
+                model='imagen-4.0-generate-001',
+                prompt=prompt,
+                config=types.GenerateImagesConfig(
+                    numberOfImages=1,
+                    aspectRatio='16:9',
+                    outputMimeType='image/png',
+                )
+            )
+            image_bytes = response.generated_images[0].image.image_bytes
+            with open(image_path, "wb") as f:
+                f.write(image_bytes)
+            relative = f"/images/{filename}"
+            results[placeholder] = (relative, alt_text, caption)
+            print(f"Educational image saved: {image_path}")
+        except Exception as e:
+            print(f"Warning: Educational image generation failed for {placeholder}: {e}")
+    return results
+
 def fetch_grounding_context(topic: str, api_key: str) -> str:
     print(f"Searching the web for context on: {topic}...")
     client = genai.Client(
@@ -71,8 +123,7 @@ def fetch_grounding_context(topic: str, api_key: str) -> str:
 def generate_content(topic: str, model: str = 'gemini-2.5-pro') -> dict:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        print("Error: GEMINI_API_KEY is not set in the environment.")
-        exit(1)
+        raise EnvironmentError("GEMINI_API_KEY is not set in the environment")
 
     # 1. Fetch grounding context using search tool
     grounding_context = fetch_grounding_context(topic, api_key)
@@ -103,6 +154,9 @@ CONCRETE FACTS AND RESEARCH FOUND FROM WEB SEARCH (use these to write the articl
             ),
         )
         validated_data = ContentPack.model_validate_json(response.text)
+        word_count = len(validated_data.article.content.split())
+        if word_count < 800:
+            print(f"Warning: Generated article is short ({word_count} words). Check content quality.")
         return validated_data.model_dump()
     except Exception as e:
         print(f"Error generating content with {model}: {e}")
@@ -120,6 +174,9 @@ CONCRETE FACTS AND RESEARCH FOUND FROM WEB SEARCH (use these to write the articl
                     ),
                 )
                 validated_data = ContentPack.model_validate_json(response.text)
+                word_count = len(validated_data.article.content.split())
+                if word_count < 800:
+                    print(f"Warning: Generated article is short ({word_count} words). Check content quality.")
                 return validated_data.model_dump()
             except Exception as fallback_err:
                 print(f"Fallback generation with gemini-2.5-flash also failed: {fallback_err}")
@@ -127,7 +184,7 @@ CONCRETE FACTS AND RESEARCH FOUND FROM WEB SEARCH (use these to write the articl
         else:
             raise e
 
-def create_markdown(data: dict, slug: str, image_path: str | None = None) -> str:
+def create_markdown(data: dict, slug: str, image_path: str | None = None, edu_image_map: dict | None = None) -> str:
     seo = data.get("seo", {})
     article = data.get("article", {})
 
@@ -135,7 +192,7 @@ def create_markdown(data: dict, slug: str, image_path: str | None = None) -> str
     description = seo.get("meta_description", "")
     keywords = seo.get("primary_keywords", []) + seo.get("secondary_keywords", [])
 
-    date_str = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     image_line = f"\nimage: {json.dumps(image_path)}" if image_path else ""
 
@@ -148,7 +205,15 @@ tags: {json.dumps(keywords)}
 author: "BreachModal Intelligence"{image_line}
 ---
 """
-    return frontmatter + "\n" + article.get("content", "")
+    content = article.get("content", "")
+
+    # Replace [Visual Graphic N] placeholders with actual image markdown
+    if edu_image_map:
+        for placeholder, (rel_path, alt_text, caption) in edu_image_map.items():
+            img_md = f"\n![{alt_text}]({rel_path})\n*{caption}*\n"
+            content = content.replace(placeholder, img_md)
+
+    return frontmatter + "\n" + content
 
 def create_social_file(data: dict) -> str:
     social = data.get("social", {})
@@ -176,7 +241,29 @@ def create_social_file(data: dict) -> str:
     if "press_release" in data:
         content += "## Press Release\n\n"
         content += data["press_release"] + "\n\n"
-        
+
+    poc = data.get("proof_of_concept")
+    if poc:
+        content += "## Proof of Concept (Structured)\n\n"
+        content += f"**Summary**: {poc.get('summary', '')}\n\n"
+        cvss = poc.get("cvss_vector", "")
+        if cvss:
+            content += f"**CVSS v3.1**: `{cvss}`\n\n"
+        content += "**Steps**:\n\n"
+        for i, step in enumerate(poc.get("steps", []), 1):
+            content += f"### Step {i}: {step.get('step', '')}\n"
+            content += f"```\n{step.get('code', '')}\n```\n"
+            content += f"{step.get('notes', '')}\n\n"
+        expected = poc.get("expected_output", "")
+        if expected:
+            content += f"**Expected Output**: {expected}\n\n"
+        mitigations = poc.get("mitigations", [])
+        if mitigations:
+            content += "**Mitigations**:\n"
+            for m in mitigations:
+                content += f"- {m}\n"
+            content += "\n"
+
     return content
 
 def slugify(text: str) -> str:
@@ -184,24 +271,38 @@ def slugify(text: str) -> str:
     text = re.sub(r'[^a-z0-9]+', '-', text)
     return text.strip('-')
 
-def publish(topic: str, model: str = 'gemini-2.5-pro', dry_run: bool = False):
+def publish(topic: str, model: str = 'gemini-2.5-pro', dry_run: bool = False, skip_image: bool = False):
     api_key = os.getenv("GEMINI_API_KEY")
     data = generate_content(topic, model=model)
-
-    slug = slugify(topic)
-    if len(slug) > 50:
-        slug = slug[:50].strip('-')
-
-    # Generate hero image before writing markdown so path goes into frontmatter
-    hero_concept = data.get("visual_brief", {}).get("hero_image_concept", "")
-    image_path = None
-    if hero_concept and api_key:
-        image_path = generate_hero_image(hero_concept, slug, api_key)
 
     output_dir = "content/posts"
     os.makedirs(output_dir, exist_ok=True)
 
-    md_content = create_markdown(data, slug, image_path=image_path)
+    slug = slugify(topic)
+    if len(slug) > 50:
+        truncated = slug[:50]
+        last_dash = truncated.rfind('-')
+        slug = truncated[:last_dash] if last_dash > 0 else truncated
+
+    base_slug = slug
+    counter = 2
+    while os.path.exists(os.path.join(output_dir, f"{slug}.md")):
+        slug = f"{base_slug}-{counter}"
+        counter += 1
+
+    # Generate hero image before writing markdown so path goes into frontmatter
+    visual_brief = data.get("visual_brief", {})
+    hero_concept = visual_brief.get("hero_image_concept", "")
+    image_path = None
+    edu_image_map = {}
+    if not skip_image and api_key:
+        if hero_concept:
+            image_path = generate_hero_image(hero_concept, slug, api_key)
+        edu_images = visual_brief.get("educational_images", [])
+        if edu_images:
+            edu_image_map = generate_educational_images(edu_images, slug, api_key)
+
+    md_content = create_markdown(data, slug, image_path=image_path, edu_image_map=edu_image_map)
     filepath = os.path.join(output_dir, f"{slug}.md")
 
     with open(filepath, "w") as f:
@@ -216,7 +317,7 @@ def publish(topic: str, model: str = 'gemini-2.5-pro', dry_run: bool = False):
         f.write(social_content)
     print(f"Social copy saved to {social_filepath}")
 
-    publish_to_nextjs(data, slug, image_relative_path=image_path, dry_run=dry_run)
+    publish_to_nextjs(data, slug, image_relative_path=image_path, dry_run=dry_run, edu_image_map=edu_image_map)
 
     if dry_run:
         print("Dry-run mode active. Skipping Git operations.")
@@ -238,12 +339,16 @@ def publish(topic: str, model: str = 'gemini-2.5-pro', dry_run: bool = False):
                 local_image_path = os.path.join("static", image_path.lstrip("/"))
                 if os.path.exists(local_image_path):
                     files_to_add.append(local_image_path)
+            for rel_path, _, _ in edu_image_map.values():
+                local_edu_path = os.path.join("static", rel_path.lstrip("/"))
+                if os.path.exists(local_edu_path):
+                    files_to_add.append(local_edu_path)
             subprocess.run(["git", "add"] + files_to_add, check=True)
 
             status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, check=True)
             if status.stdout.strip():
                 subprocess.run(["git", "commit", "-m", f"Auto-publish: {topic}"], check=True)
-                push_result = _git_push()
+                push_result = git_push()
                 if push_result:
                     print("Successfully pushed to remote repository.")
                 else:
@@ -254,79 +359,41 @@ def publish(topic: str, model: str = 'gemini-2.5-pro', dry_run: bool = False):
             print(f"Git operations failed: {e}")
 
 
-def translate_markdown_to_nextjs_body(markdown_content: str) -> str:
-    lines = markdown_content.split("\n")
-    translated_lines = []
-    for line in lines:
-        stripped = line.strip()
-        # Match a markdown heading, e.g., "# Heading", "## Heading", "### Heading"
-        match = re.match(r'^(#+)\s+(.+)$', stripped)
-        if match:
-            heading_text = match.group(2).strip()
-            translated_lines.append(f"**{heading_text}**")
-        else:
-            translated_lines.append(line)
-    return "\n".join(translated_lines)
-
-def determine_category(topic: str, content: str) -> str:
-    topic_lower = topic.lower()
-    content_lower = content.lower()
-    if "soc 2" in topic_lower or "compliance" in topic_lower or "audit" in topic_lower or "gdpr" in topic_lower or "hipaa" in topic_lower or "iso 27001" in topic_lower:
-        return "Compliance"
-    elif "ai" in topic_lower or "artificial intelligence" in topic_lower or "llm" in topic_lower or "machine learning" in topic_lower:
-        return "AI Security"
-    elif "incident" in topic_lower or "response" in topic_lower or "containment" in topic_lower or "breach response" in topic_lower or "playbook" in topic_lower:
-        return "Incident Response"
-    elif "vulnerability" in topic_lower or "zero-day" in topic_lower or "exploit" in topic_lower or "cve" in topic_lower or "threat" in topic_lower or "attack" in topic_lower or "ransomware" in topic_lower:
-        return "Threat Intelligence"
-    # Fallback checking content too
-    if "compliance" in content_lower or "audit" in content_lower:
-        return "Compliance"
-    if "ai" in content_lower or "machine learning" in content_lower:
-        return "AI Security"
-    if "incident response" in content_lower or "playbook" in content_lower:
-        return "Incident Response"
-    return "Threat Intelligence"
-
-def _git_push_nextjs(nextjs_dir: str) -> bool:
-    gh_token = os.getenv("GH_TOKEN")
-    if gh_token:
-        url_result = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            cwd=nextjs_dir, capture_output=True, text=True
-        )
-        remote_url = url_result.stdout.strip()
-        if remote_url.startswith("https://github.com/"):
-            auth_url = remote_url.replace("https://github.com/", f"https://{gh_token}@github.com/")
-            result = subprocess.run(["git", "push", auth_url], cwd=nextjs_dir, capture_output=True, text=True)
-            return result.returncode == 0
-
-    result = subprocess.run(["git", "push"], cwd=nextjs_dir, capture_output=True, text=True)
-    return result.returncode == 0
-
-def publish_to_nextjs(data: dict, slug: str, image_relative_path: str | None = None, dry_run: bool = False):
+def publish_to_nextjs(data: dict, slug: str, image_relative_path: str | None = None, dry_run: bool = False, edu_image_map: dict | None = None):
     """Publish the blog post to the Next.js site in BreachLawAgency repository."""
     import shutil
-    nextjs_dir = "/Users/drop/BreachLawAgency"
-    
+    nextjs_dir = get_nextjs_dir()
+
     if not os.path.exists(nextjs_dir):
         print(f"Error: Next.js repository directory {nextjs_dir} does not exist.")
         return
 
-    # 1. Copy image to BreachLawAgency public folder if path is provided
-    if image_relative_path:
-        src_image = os.path.join("static", image_relative_path.lstrip("/"))
-        dest_image = os.path.join(nextjs_dir, "public", image_relative_path.lstrip("/"))
-        
+    def _copy_image(rel_path: str):
+        src = os.path.join("static", rel_path.lstrip("/"))
+        dest = os.path.join(nextjs_dir, "public", rel_path.lstrip("/"))
         if not dry_run:
-            if os.path.exists(src_image):
-                os.makedirs(os.path.dirname(dest_image), exist_ok=True)
-                shutil.copy2(src_image, dest_image)
-                print(f"Copied image {src_image} to {dest_image}")
+            if os.path.exists(src):
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                shutil.copy2(src, dest)
+                print(f"Copied image {src} to {dest}")
+                return dest
             else:
-                print(f"Warning: Source image {src_image} does not exist.")
+                print(f"Warning: Source image {src} does not exist.")
         else:
-            print(f"[Dry-run] Would copy image {src_image} to {dest_image}")
+            print(f"[Dry-run] Would copy image {src} to {dest}")
+        return None
+
+    # 1. Copy hero image and educational images to BreachLawAgency public folder
+    staged_images = []
+    if image_relative_path:
+        dest = _copy_image(image_relative_path)
+        if dest:
+            staged_images.append(dest)
+    if edu_image_map:
+        for rel_path, _, _ in edu_image_map.values():
+            dest = _copy_image(rel_path)
+            if dest:
+                staged_images.append(dest)
 
     # 2. Extract content details
     seo = data.get("seo", {})
@@ -339,11 +406,9 @@ def publish_to_nextjs(data: dict, slug: str, image_relative_path: str | None = N
     
     category = determine_category(title, raw_content)
     
-    words = len(raw_content.split())
-    read_time_min = max(1, round(words / 200))
-    read_time = f"{read_time_min} min read"
-    
-    date_str = datetime.utcnow().strftime("%Y-%m-%d")
+    read_time = get_read_time(raw_content)
+
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     data_ts_path = os.path.join(nextjs_dir, "src/app/blog/data.ts")
     
     if not os.path.exists(data_ts_path):
@@ -383,16 +448,18 @@ def publish_to_nextjs(data: dict, slug: str, image_relative_path: str | None = N
         # Git operations
         try:
             print("Staging, committing, and pushing changes in BreachLawAgency...")
-            if image_relative_path:
-                dest_image = os.path.join(nextjs_dir, "public", image_relative_path.lstrip("/"))
-                if os.path.exists(dest_image):
-                    subprocess.run(["git", "add", "-f", dest_image], cwd=nextjs_dir, check=True)
+            for dest_img in staged_images:
+                if os.path.exists(dest_img):
+                    try:
+                        subprocess.run(["git", "add", "-f", dest_img], cwd=nextjs_dir, check=True)
+                    except subprocess.CalledProcessError as e:
+                        print(f"  Warning: Could not stage image {dest_img}: {e}. Continuing.")
             subprocess.run(["git", "add", data_ts_path], cwd=nextjs_dir, check=True)
             
             status = subprocess.run(["git", "status", "--porcelain"], cwd=nextjs_dir, capture_output=True, text=True, check=True)
             if status.stdout.strip():
                 subprocess.run(["git", "commit", "-m", f"Auto-publish: {title}"], cwd=nextjs_dir, check=True)
-                push_result = _git_push_nextjs(nextjs_dir)
+                push_result = git_push(cwd=nextjs_dir)
                 if push_result:
                     print("Successfully pushed to BreachLawAgency remote repository.")
                 else:
@@ -405,25 +472,6 @@ def publish_to_nextjs(data: dict, slug: str, image_relative_path: str | None = N
     else:
         print(f"[Dry-run] Would insert the following post into {data_ts_path}:\n{new_post_str}")
 
-
-def _git_push() -> bool:
-    """Push to origin, using GH_TOKEN from env if available (needed for non-interactive cron)."""
-    gh_token = os.getenv("GH_TOKEN")
-    if gh_token:
-        # Get the remote URL and inject the token
-        url_result = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            capture_output=True, text=True
-        )
-        remote_url = url_result.stdout.strip()
-        # Convert https://github.com/... to https://token@github.com/...
-        if remote_url.startswith("https://github.com/"):
-            auth_url = remote_url.replace("https://github.com/", f"https://{gh_token}@github.com/")
-            result = subprocess.run(["git", "push", auth_url], capture_output=True, text=True)
-            return result.returncode == 0
-
-    result = subprocess.run(["git", "push"], capture_output=True, text=True)
-    return result.returncode == 0
 
 def get_existing_topics() -> list:
     output_dir = "content/posts"
@@ -451,8 +499,7 @@ def get_existing_topics() -> list:
 def generate_daily_topic(model: str = 'gemini-2.5-pro') -> str:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        print("Error: GEMINI_API_KEY is not set in the environment.")
-        exit(1)
+        raise EnvironmentError("GEMINI_API_KEY is not set in the environment")
 
     client = genai.Client(
         api_key=api_key,
@@ -479,10 +526,16 @@ if __name__ == "__main__":
     parser.add_argument("topic", nargs="?", help="The cybersecurity topic to generate and publish (optional. If omitted, a topic will be auto-generated)")
     parser.add_argument("--dry-run", action="store_true", help="Generate files but do not run Git commit/push")
     parser.add_argument("--model", default="gemini-2.5-pro", choices=["gemini-2.5-pro", "gemini-2.5-flash"], help="Gemini model to use")
+    parser.add_argument("--skip-image", action="store_true", help="Skip hero image generation")
+    parser.add_argument("--topic-only", action="store_true", help="Generate and print topic only, without publishing")
     args = parser.parse_args()
-    
+
     topic = args.topic
     if not topic:
         topic = generate_daily_topic(model=args.model)
-        
-    publish(topic, model=args.model, dry_run=args.dry_run)
+
+    if args.topic_only:
+        print(topic)
+        exit(0)
+
+    publish(topic, model=args.model, dry_run=args.dry_run, skip_image=args.skip_image)

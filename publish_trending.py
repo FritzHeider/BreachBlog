@@ -1,4 +1,5 @@
 import os
+import sys
 import argparse
 from google import genai
 from google.genai import types
@@ -11,7 +12,7 @@ def fetch_trending_topic() -> str:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         print("Error: GEMINI_API_KEY is not set.")
-        exit(1)
+        sys.exit(1)
         
     client = genai.Client(
         api_key=api_key,
@@ -42,14 +43,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Find a trending cybersecurity topic and publish content for it")
     parser.add_argument("--dry-run", action="store_true", help="Generate files but do not run Git commit/push")
     parser.add_argument("--model", default="gemini-2.5-pro", choices=["gemini-2.5-pro", "gemini-2.5-flash"], help="Gemini model to use for the main article")
+    parser.add_argument("--skip-image", action="store_true", help="Skip hero image generation")
     args = parser.parse_args()
     
     try:
         topic = fetch_trending_topic()
         print(f"Selected trending topic: {topic}")
-        publish(topic, model=args.model, dry_run=args.dry_run)
+        publish(topic, model=args.model, dry_run=args.dry_run, skip_image=args.skip_image)
     except Exception as e:
         import traceback
         traceback.print_exc()
         print(f"Failed to fetch or publish trending topic: {e}")
-        exit(1)
+        sys.exit(1)
