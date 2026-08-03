@@ -3,6 +3,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from google import genai
@@ -19,6 +20,26 @@ from utils import (
 )
 
 load_dotenv()
+
+# Transient Gemini disconnects are the dominant cron failure mode; retry before giving up.
+GENERATE_MAX_ATTEMPTS = 3
+GENERATE_BACKOFF_SECONDS = 20
+
+
+def _with_retries(label: str, fn, max_attempts: int = GENERATE_MAX_ATTEMPTS):
+    """Call fn(), retrying transient failures with exponential backoff."""
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn()
+        except Exception as e:
+            last_error = e
+            print(f"Error during {label} (attempt {attempt}/{max_attempts}): {e}")
+            if attempt < max_attempts:
+                backoff = GENERATE_BACKOFF_SECONDS * (2 ** (attempt - 1))
+                print(f"  Waiting {backoff}s before retry...")
+                time.sleep(backoff)
+    raise last_error
 
 def generate_hero_image(hero_concept: str, slug: str, api_key: str) -> str | None:
     """Generate a hero image using Imagen 3 and save to static/images/. Returns relative path or None."""
@@ -110,15 +131,18 @@ def fetch_grounding_context(topic: str, api_key: str) -> str:
     Search the web for the latest, authoritative threat intelligence, articles, and advisories regarding this cybersecurity topic: "{topic}".
     Provide a detailed factual summary of the vulnerability, threat actors, exploits, and mitigations based on the search results. Include specific details like affected versions and CVE numbers if available.
     """
-    response = client.models.generate_content(
-        model='gemini-2.5-flash',
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            tools=[types.Tool(google_search=types.GoogleSearch())],
-            temperature=0.3,
+    def _attempt():
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+                temperature=0.3,
+            )
         )
-    )
-    return response.text
+        return response.text
+
+    return _with_retries("grounding search", _attempt)
 
 def generate_content(topic: str, model: str = 'gemini-2.5-pro') -> dict:
     api_key = os.getenv("GEMINI_API_KEY")
@@ -141,10 +165,9 @@ CONCRETE FACTS AND RESEARCH FOUND FROM WEB SEARCH (use these to write the articl
         http_options={'timeout': 300000.0}
     )
     
-    print(f"Generating content for topic: {topic} using {model}...")
-    try:
+    def _attempt(target_model: str) -> dict:
         response = client.models.generate_content(
-            model=model,
+            model=target_model,
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
@@ -158,31 +181,22 @@ CONCRETE FACTS AND RESEARCH FOUND FROM WEB SEARCH (use these to write the articl
         if word_count < 800:
             print(f"Warning: Generated article is short ({word_count} words). Check content quality.")
         return validated_data.model_dump()
-    except Exception as e:
-        print(f"Error generating content with {model}: {e}")
-        if model != 'gemini-2.5-flash':
-            print("Retrying generation with fallback model: gemini-2.5-flash...")
-            try:
-                response = client.models.generate_content(
-                    model='gemini-2.5-flash',
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        system_instruction=SYSTEM_PROMPT,
-                        response_mime_type="application/json",
-                        response_schema=ContentPack,
-                        temperature=0.7,
-                    ),
-                )
-                validated_data = ContentPack.model_validate_json(response.text)
-                word_count = len(validated_data.article.content.split())
-                if word_count < 800:
-                    print(f"Warning: Generated article is short ({word_count} words). Check content quality.")
-                return validated_data.model_dump()
-            except Exception as fallback_err:
-                print(f"Fallback generation with gemini-2.5-flash also failed: {fallback_err}")
-                raise fallback_err
-        else:
-            raise e
+
+    # Each model gets several attempts with backoff before we fall back to the next one.
+    models_to_try = [model] if model == 'gemini-2.5-flash' else [model, 'gemini-2.5-flash']
+    last_error = None
+
+    for target_model in models_to_try:
+        if target_model != model:
+            print(f"Falling back to model: {target_model}...")
+        print(f"Generating content for topic: {topic} using {target_model}...")
+        try:
+            return _with_retries(f"generation with {target_model}", lambda: _attempt(target_model))
+        except Exception as e:
+            last_error = e
+
+    print(f"All generation attempts failed across models {models_to_try}.")
+    raise last_error
 
 def create_markdown(data: dict, slug: str, image_path: str | None = None, edu_image_map: dict | None = None) -> str:
     seo = data.get("seo", {})

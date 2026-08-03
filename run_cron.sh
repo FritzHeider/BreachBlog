@@ -44,8 +44,16 @@ if ! command -v git-lfs &> /dev/null; then
     echo "$(date): Warning: git-lfs is not installed. Large file pushes may fail." >> "$PROJECT_DIR/cron_run.log"
 fi
 .venv/bin/python publish_trending.py >> "$PROJECT_DIR/cron_run.log" 2>&1
-echo "$(date): Execution finished with exit code $?." >> "$PROJECT_DIR/cron_run.log"
+EXIT_CODE=$?
+echo "$(date): Execution finished with exit code ${EXIT_CODE}." >> "$PROJECT_DIR/cron_run.log"
 
-# Update start time for the next 24 hour interval
-date +%s > "$START_FILE"
+if [ "$EXIT_CODE" -eq 0 ]; then
+    # Success: start the next full 24 hour interval.
+    date +%s > "$START_FILE"
+else
+    # Failure: don't burn the whole window. Back the clock off so the next
+    # cron tick (12h cadence) retries instead of waiting another full day.
+    echo "$(date): Run failed. Will retry on the next cron tick." >> "$PROJECT_DIR/cron_run.log"
+    echo $(( $(date +%s) - DELAY )) > "$START_FILE"
+fi
 
