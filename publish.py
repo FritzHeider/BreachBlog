@@ -42,7 +42,7 @@ def _with_retries(label: str, fn, max_attempts: int = GENERATE_MAX_ATTEMPTS):
     raise last_error
 
 def generate_hero_image(hero_concept: str, slug: str, api_key: str) -> str | None:
-    """Generate a hero image using Imagen 3 and save to static/images/. Returns relative path or None."""
+    """Generate a hero image using gemini-2.5-flash-image and save to static/images/. Returns relative path or None."""
     output_dir = "static/images"
     os.makedirs(output_dir, exist_ok=True)
     image_path = os.path.join(output_dir, f"{slug}.png")
@@ -59,20 +59,23 @@ def generate_hero_image(hero_concept: str, slug: str, api_key: str) -> str | Non
             api_key=api_key,
             http_options={'timeout': 300000.0}
         )
-        response = client.models.generate_images(
-            model='imagen-4.0-generate-001',
-            prompt=prompt,
-            config=types.GenerateImagesConfig(
-                numberOfImages=1,
-                aspectRatio='16:9',
-                outputMimeType='image/png',
-            )
+        response = client.models.generate_content(
+            model='gemini-2.5-flash-image',
+            contents=prompt,
         )
-        image_bytes = response.generated_images[0].image.image_bytes
-        with open(image_path, "wb") as f:
-            f.write(image_bytes)
-        print(f"Hero image saved to {image_path}")
-        return f"/images/{slug}.png"
+        image_bytes = None
+        for part in response.candidates[0].content.parts:
+            if part.inline_data:
+                image_bytes = part.inline_data.data
+                break
+        if image_bytes:
+            with open(image_path, "wb") as f:
+                f.write(image_bytes)
+            print(f"Hero image saved to {image_path}")
+            return f"/images/{slug}.png"
+        else:
+            print("Warning: No inline image data in gemini-2.5-flash-image response")
+            return None
     except Exception as e:
         print(f"Warning: Image generation failed: {e}")
         return None
@@ -102,21 +105,23 @@ def generate_educational_images(educational_images: list, slug: str, api_key: st
             "Clean, readable labels. No watermarks or logos. 16:9 format."
         )
         try:
-            response = client.models.generate_images(
-                model='imagen-4.0-generate-001',
-                prompt=prompt,
-                config=types.GenerateImagesConfig(
-                    numberOfImages=1,
-                    aspectRatio='16:9',
-                    outputMimeType='image/png',
-                )
+            response = client.models.generate_content(
+                model='gemini-2.5-flash-image',
+                contents=prompt,
             )
-            image_bytes = response.generated_images[0].image.image_bytes
-            with open(image_path, "wb") as f:
-                f.write(image_bytes)
-            relative = f"/images/{filename}"
-            results[placeholder] = (relative, alt_text, caption)
-            print(f"Educational image saved: {image_path}")
+            image_bytes = None
+            for part in response.candidates[0].content.parts:
+                if part.inline_data:
+                    image_bytes = part.inline_data.data
+                    break
+            if image_bytes:
+                with open(image_path, "wb") as f:
+                    f.write(image_bytes)
+                relative = f"/images/{filename}"
+                results[placeholder] = (relative, alt_text, caption)
+                print(f"Educational image saved: {image_path}")
+            else:
+                print(f"Warning: No inline image data for {placeholder}")
         except Exception as e:
             print(f"Warning: Educational image generation failed for {placeholder}: {e}")
     return results

@@ -5,6 +5,7 @@ date: 2026-09-24T07:01:42Z
 slug: "zero-click-rce-in-ai-agents-via-plugin4shell"
 tags: ["Plugin4Shell vulnerability", "AI agent security", "zero-click RCE exploit", "AI supply chain attack", "GitHub Copilot vulnerability", "Claude Code exploit", "SHA-pinning bypass"]
 author: "BreachModal Intelligence"
+image: "/images/zero-click-rce-in-ai-agents-via-plugin4shell.png"
 ---
 
 The trust model for the entire AI agent ecosystem is fundamentally flawed, enabling a new class of zero-click supply chain attacks. The discovery of the Plugin4Shell vulnerability proves that the marketplaces and plugin architectures powering modern AI coding assistants are a critical, unmanaged attack surface. This is not a theoretical risk; it is an active failure of security design.
