@@ -138,7 +138,7 @@ def fetch_grounding_context(topic: str, api_key: str) -> str:
     """
     def _attempt():
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.8-flash',
             contents=prompt,
             config=types.GenerateContentConfig(
                 tools=[types.Tool(google_search=types.GoogleSearch())],
@@ -149,7 +149,7 @@ def fetch_grounding_context(topic: str, api_key: str) -> str:
 
     return _with_retries("grounding search", _attempt)
 
-def generate_content(topic: str, model: str = 'gemini-2.5-pro') -> dict:
+def generate_content(topic: str, model: str = 'gemini-3.1-pro-preview') -> dict:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise EnvironmentError("GEMINI_API_KEY is not set in the environment")
@@ -188,7 +188,7 @@ CONCRETE FACTS AND RESEARCH FOUND FROM WEB SEARCH (use these to write the articl
         return validated_data.model_dump()
 
     # Each model gets several attempts with backoff before we fall back to the next one.
-    models_to_try = [model] if model == 'gemini-2.5-flash' else [model, 'gemini-2.5-flash']
+    models_to_try = [model] if model == 'gemini-3.8-flash' else [model, 'gemini-3.8-flash']
     last_error = None
 
     for target_model in models_to_try:
@@ -290,7 +290,7 @@ def slugify(text: str) -> str:
     text = re.sub(r'[^a-z0-9]+', '-', text)
     return text.strip('-')
 
-def publish(topic: str, model: str = 'gemini-2.5-pro', dry_run: bool = False, skip_image: bool = False):
+def publish(topic: str, model: str = 'gemini-3.1-pro-preview', dry_run: bool = False, skip_image: bool = False):
     api_key = os.getenv("GEMINI_API_KEY")
     data = generate_content(topic, model=model)
 
@@ -515,7 +515,7 @@ def get_existing_topics() -> list:
                 print(f"Warning: Failed to read {filename}: {e}")
     return topics
 
-def generate_daily_topic(model: str = 'gemini-2.5-pro') -> str:
+def generate_daily_topic(model: str = 'gemini-3.1-pro-preview') -> str:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise EnvironmentError("GEMINI_API_KEY is not set in the environment")
@@ -544,7 +544,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Automated Publishing System for BreachModal.com")
     parser.add_argument("topic", nargs="?", help="The cybersecurity topic to generate and publish (optional. If omitted, a topic will be auto-generated)")
     parser.add_argument("--dry-run", action="store_true", help="Generate files but do not run Git commit/push")
-    parser.add_argument("--model", default="gemini-2.5-pro", choices=["gemini-2.5-pro", "gemini-2.5-flash"], help="Gemini model to use")
+    parser.add_argument("--model", default="gemini-3.1-pro-preview", choices=["gemini-3.1-pro-preview", "gemini-3.8-flash"], help="Gemini model to use")
     parser.add_argument("--skip-image", action="store_true", help="Skip hero image generation")
     parser.add_argument("--topic-only", action="store_true", help="Generate and print topic only, without publishing")
     args = parser.parse_args()

@@ -28,7 +28,7 @@ def fetch_trending_topic() -> str:
     
     print("Searching for trending cybersecurity topics...")
     response = client.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-3.8-flash',
         contents=prompt,
         config=types.GenerateContentConfig(
             tools=[types.Tool(google_search=types.GoogleSearch())],
@@ -42,7 +42,7 @@ def fetch_trending_topic() -> str:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Find a trending cybersecurity topic and publish content for it")
     parser.add_argument("--dry-run", action="store_true", help="Generate files but do not run Git commit/push")
-    parser.add_argument("--model", default="gemini-2.5-pro", choices=["gemini-2.5-pro", "gemini-2.5-flash"], help="Gemini model to use for the main article")
+    parser.add_argument("--model", default="gemini-3.1-pro-preview", choices=["gemini-3.1-pro-preview", "gemini-3.8-flash"], help="Gemini model to use for the main article")
     parser.add_argument("--skip-image", action="store_true", help="Skip hero image generation")
     args = parser.parse_args()
     
