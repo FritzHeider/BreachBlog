@@ -13,4 +13,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["python", "publish_trending.py"]
+RUN chmod +x /app/run_daily.sh
+
+CMD ["/app/run_daily.sh"]
