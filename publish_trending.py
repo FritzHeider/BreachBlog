@@ -8,6 +8,14 @@ from publish import publish
 
 load_dotenv()
 
+CYBER_SAFETY_SETTINGS = [
+    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+]
+
 def fetch_trending_topic() -> str:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
@@ -32,6 +40,7 @@ def fetch_trending_topic() -> str:
         contents=prompt,
         config=types.GenerateContentConfig(
             tools=[types.Tool(google_search=types.GoogleSearch())],
+            safety_settings=CYBER_SAFETY_SETTINGS,
             temperature=0.7,
         )
     )
@@ -42,7 +51,7 @@ def fetch_trending_topic() -> str:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Find a trending cybersecurity topic and publish content for it")
     parser.add_argument("--dry-run", action="store_true", help="Generate files but do not run Git commit/push")
-    parser.add_argument("--model", default="gemini-3.1-pro-preview", choices=["gemini-3.1-pro-preview", "gemini-3.8-flash"], help="Gemini model to use for the main article")
+    parser.add_argument("--model", default="gemini-3.8-flash", choices=["gemini-3.1-pro-preview", "gemini-3.8-flash"], help="Gemini model to use for the main article")
     parser.add_argument("--skip-image", action="store_true", help="Skip hero image generation")
     args = parser.parse_args()
     

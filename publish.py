@@ -25,6 +25,14 @@ load_dotenv()
 GENERATE_MAX_ATTEMPTS = 3
 GENERATE_BACKOFF_SECONDS = 20
 
+CYBER_SAFETY_SETTINGS = [
+    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+]
+
 
 def _with_retries(label: str, fn, max_attempts: int = GENERATE_MAX_ATTEMPTS):
     """Call fn(), retrying transient failures with exponential backoff."""
@@ -142,6 +150,7 @@ def fetch_grounding_context(topic: str, api_key: str) -> str:
             contents=prompt,
             config=types.GenerateContentConfig(
                 tools=[types.Tool(google_search=types.GoogleSearch())],
+                safety_settings=CYBER_SAFETY_SETTINGS,
                 temperature=0.3,
             )
         )
@@ -149,28 +158,29 @@ def fetch_grounding_context(topic: str, api_key: str) -> str:
 
     return _with_retries("grounding search", _attempt)
 
-def generate_content(topic: str, model: str = 'gemini-3.1-pro-preview') -> dict:
+def generate_content(topic: str, model: str = 'gemini-3.8-flash') -> dict:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise EnvironmentError("GEMINI_API_KEY is not set in the environment")
 
-    # 1. Fetch grounding context using search tool
-    grounding_context = fetch_grounding_context(topic, api_key)
-    
-    # 2. Build prompt with context
-    prompt = f"""
-{USER_PROMPT_TEMPLATE.format(topic=topic)}
-
-CONCRETE FACTS AND RESEARCH FOUND FROM WEB SEARCH (use these to write the article and details):
-{grounding_context}
-"""
+    grounding_context = ""
+    try:
+        grounding_context = fetch_grounding_context(topic, api_key)
+    except Exception as e:
+        print(f"Warning: Grounding search failed: {e}. Proceeding without web context.")
 
     client = genai.Client(
         api_key=api_key,
         http_options={'timeout': 300000.0}
     )
     
-    def _attempt(target_model: str) -> dict:
+    def _attempt(target_model: str, use_grounding: bool = True) -> dict:
+        ctx = grounding_context if (use_grounding and grounding_context) else ""
+        facts_block = f"\nCONCRETE FACTS AND RESEARCH FOUND FROM WEB SEARCH:\n{ctx}\n" if ctx else ""
+        prompt = f"""
+{USER_PROMPT_TEMPLATE.format(topic=topic)}
+{facts_block}
+"""
         response = client.models.generate_content(
             model=target_model,
             contents=prompt,
@@ -178,14 +188,37 @@ CONCRETE FACTS AND RESEARCH FOUND FROM WEB SEARCH (use these to write the articl
                 system_instruction=SYSTEM_PROMPT,
                 response_mime_type="application/json",
                 response_schema=ContentPack,
+                safety_settings=CYBER_SAFETY_SETTINGS,
                 temperature=0.7,
             ),
         )
-        validated_data = ContentPack.model_validate_json(response.text)
-        word_count = len(validated_data.article.content.split())
+        if getattr(response, 'parsed', None) is not None:
+            validated_data = response.parsed
+        elif getattr(response, 'text', None):
+            validated_data = ContentPack.model_validate_json(response.text)
+        elif response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+            text_to_parse = None
+            for part in response.candidates[0].content.parts:
+                if getattr(part, 'text', None):
+                    text_to_parse = part.text
+                    break
+            if text_to_parse:
+                validated_data = ContentPack.model_validate_json(text_to_parse)
+            else:
+                raise ValueError("No text found in candidate parts")
+        else:
+            raise ValueError(f"Empty or blocked Gemini response: {response}")
+
+        if isinstance(validated_data, ContentPack):
+            validated_dict = validated_data.model_dump()
+        else:
+            validated_dict = validated_data
+
+        article_content = validated_dict.get("article", {}).get("content", "")
+        word_count = len(article_content.split())
         if word_count < 800:
             print(f"Warning: Generated article is short ({word_count} words). Check content quality.")
-        return validated_data.model_dump()
+        return validated_dict
 
     # Each model gets several attempts with backoff before we fall back to the next one.
     models_to_try = [model] if model == 'gemini-3.8-flash' else [model, 'gemini-3.8-flash']
